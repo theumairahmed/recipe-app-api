@@ -150,7 +150,7 @@ class PrivateUserApiTests(TestCase):
         # API returns 200
         self.assertEqual(res.status_code, status.HTTP_200_OK)
         # The properties of returned user are same as the requesting user
-        self.assertEqual(self.assertEqual(res.data), {
+        self.assertEqual(res.data, {
             'name': self.user.name,
             'email': self.user.email
         })
