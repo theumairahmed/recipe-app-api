@@ -1,3 +1,8 @@
+import tempfile
+import os
+
+from PIL import Image
+
 from django.contrib.auth import get_user_model
 from django.test import TestCase
 from django.urls import reverse
@@ -11,6 +16,11 @@ from recipe.serializers import RecipeSerializer, RecipeDetailSerializer
 
 
 RECIPES_URL = reverse('recipe:recipe-list')
+
+
+def image_upload_url(recipe_id):
+    """Return URL for recipe image upload"""
+    return reverse('recipe:recipe-upload-image', args=[recipe_id])
 
 
 def detail_url(recipe_id):
@@ -171,3 +181,153 @@ class PrivateRecipeApiTests(TestCase):
         self.assertEqual(len(ingredients), 2)
         self.assertIn(ingredient1, ingredients)
         self.assertIn(ingredient2, ingredients)
+
+    def test_partial_update_recipe(self):
+        """Test updating a recipe with patch"""
+        # Let's first create a recipe with a tag in DB
+        recipe = sample_recipe(self.user)
+        recipe.tags.add(sample_tag(self.user))
+
+        # Now update the tag and title of the recipe via API
+        new_tag = sample_tag(self.user, 'Curry')
+        payload = {
+            'title': 'Chicken Tikka',
+            'tags': [new_tag.id]
+        }
+        recipe_url = detail_url(recipe.id)
+        self.client.patch(recipe_url, payload)
+
+        # Refresh the recipe object from DB
+        recipe.refresh_from_db()
+        tags = recipe.tags.all()
+
+        # Check all the tests
+        self.assertEqual(recipe.title, payload['title'])
+        self.assertEqual(len(tags), 1)
+        self.assertIn(new_tag, tags)
+
+    def test_full_update_recipe(self):
+        """Test fully updating a recipe with patch"""
+        # Let's first create a recipe in DB
+        recipe = sample_recipe(self.user)
+        recipe.tags.add(sample_tag(self.user))
+
+        # Now update all of its properties
+        payload = {
+            'title': 'Spaghetti',
+            'time_minutes': 25,
+            'price': 5.00
+        }
+        recipe_url = detail_url(recipe.id)
+        self.client.put(recipe_url, payload)
+
+        # Refresh the recipe object from DB
+        recipe.refresh_from_db()
+
+        # Run all the tests
+        self.assertEqual(recipe.title, payload['title'])
+        self.assertEqual(recipe.time_minutes, payload['time_minutes'])
+        self.assertEqual(recipe.price, payload['price'])
+        tags = recipe.tags.all()
+        self.assertEqual(len(tags), 0)
+
+    def test_filter_recipes_by_tags(self):
+        """Test returning recipes with specific tags"""
+
+        # Create two recipes and add one tag to each of them
+        recipe1 = sample_recipe(
+            user=self.user,
+            title='Thai vegetable curry'
+        )
+        recipe2 = sample_recipe(
+            user=self.user,
+            title='Aubergine with tahini'
+        )
+        tag1 = sample_tag(user=self.user, name='Vegan')
+        tag2 = sample_tag(user=self.user, name='Vegetarian')
+        recipe1.tags.add(tag1)
+        recipe2.tags.add(tag2)
+
+        # Create another recipe without tags that should not appear in the
+        # filtered response
+        recipe3 = sample_recipe(user=self.user, title='Fish and chips')
+
+        # Now make an API call to filter the recipes by these two tags
+        res = self.client.get(
+            RECIPES_URL,
+            {'tags': f'{tag1.id}, {tag2.id}'}
+        )
+
+        # Convert DB objects of recipes to JSON
+        serializer1 = RecipeSerializer(recipe1)
+        serializer2 = RecipeSerializer(recipe2)
+        serializer3 = RecipeSerializer(recipe3)
+
+        # The response should only contain recipe1 and recipe2
+        self.assertIn(serializer1.data, res.data)
+        self.assertIn(serializer2.data, res.data)
+        self.assertNotIn(serializer3.data, res.data)
+
+    def test_filter_recipes_by_ingredients(self):
+        """Test returning recipes with specific ingredients"""
+        recipe1 = sample_recipe(user=self.user, title='Posh beans on toast')
+        recipe2 = sample_recipe(user=self.user, title='Chicken Cacciatore')
+        ingredient1 = sample_ingredient(user=self.user, name='Feta Cheese')
+        ingredient2 = sample_ingredient(user=self.user, name='Chicken')
+        recipe1.ingredients.add(ingredient1)
+        recipe2.ingredients.add(ingredient2)
+        recipe3 = sample_recipe(user=self.user, title='Steak and Mushrooms')
+
+        res = self.client.get(
+            RECIPES_URL,
+            {'ingredients': f'{ingredient1.id}, {ingredient2.id}'}
+        )
+
+        serializer1 = RecipeSerializer(recipe1)
+        serializer2 = RecipeSerializer(recipe2)
+        serializer3 = RecipeSerializer(recipe3)
+
+        self.assertIn(serializer1.data, res.data)
+        self.assertIn(serializer2.data, res.data)
+        self.assertNotIn(serializer3.data, res.data)
+
+
+class RecipeImageUploadTests(TestCase):
+    def setUp(self):
+        self.client = APIClient()
+        self.user = get_user_model().objects.create_user(
+            'test@gmail.com',
+            'testpass'
+        )
+        self.client.force_authenticate(self.user)
+        self.recipe = sample_recipe(user=self.user)
+
+    def tearDown(self):
+        # Delete the image of the recipe to avoid unnecessary files on system
+        self.recipe.image.delete()
+
+    def test_upload_image_to_recipe(self):
+        """Test uploading an image to recipe"""
+        url = image_upload_url(self.recipe.id)
+        # Create a temporary image file and post it to the API
+        with tempfile.NamedTemporaryFile(suffix='.jpg') as ntf:
+            img = Image.new('RGB', (10, 10))  # Blank black image
+            img.save(ntf, format='JPEG')  # save it to filename
+            ntf.seek(0)  # Seek the file to beginning to easily read
+            # Post the file to the API client
+            res = self.client.post(url, {'image': ntf}, format='multipart')
+
+        # refresh the recipe object from DB
+        self.recipe.refresh_from_db()
+
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        self.assertIn('image', res.data)
+        # Check that the image path exists in the filesystem
+        self.assertTrue(os.path.exists(self.recipe.image.path))
+
+    def test_upload_image_bad_request(self):
+        """Test uploading an invalid image"""
+        url = image_upload_url(self.recipe.id)
+        res = self.client.post(url, {'image': 'notimage'}, format='multipart')
+
+        self.assertEqual(res.status_code, status.HTTP_400_BAD_REQUEST)

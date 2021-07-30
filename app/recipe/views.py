@@ -1,4 +1,6 @@
-from rest_framework import viewsets, mixins
+from rest_framework.decorators import action
+from rest_framework.response import Response
+from rest_framework import viewsets, mixins, status
 from rest_framework.authentication import TokenAuthentication
 from rest_framework.permissions import IsAuthenticated
 
@@ -55,9 +57,29 @@ class RecipeViewSet(viewsets.ModelViewSet):
     authentication_classes = (TokenAuthentication, )
     permission_classes = (IsAuthenticated, )
 
+    def _params_to_ints(self, qs):
+        """Convert a list of string IDs to a list of integers"""
+        return [int(str_id) for str_id in qs.split(',')]
+
     def get_queryset(self):
         """Retrieve the recipes for the authenticated user"""
-        return self.queryset.filter(user=self.request.user)
+        # Fetch the tags and ingredients params from the query
+        tags = self.request.query_params.get('tags')
+        ingredients = self.request.query_params.get('ingredients')
+
+        # basic queryset
+        queryset = self.queryset
+
+        # filter the query further based on the tags or ingredients
+        if tags:
+            tag_ids = self._params_to_ints(tags)
+            queryset = queryset.filter(tags__id__in=tag_ids)
+        if ingredients:
+            ingredient_ids = self._params_to_ints(ingredients)
+            queryset = queryset.filter(ingredients__id__in=ingredient_ids)
+
+        # Finally return the query filtered on user now
+        return queryset.filter(user=self.request.user)
 
     def get_serializer_class(self):
         """Return appropriate serializer based on list or retrieve"""
@@ -65,8 +87,50 @@ class RecipeViewSet(viewsets.ModelViewSet):
             # If the action is retrieve (means detail of a recipe is retrieved)
             # return the detail serializer otherwise just return the default
             return serializers.RecipeDetailSerializer
+        # self.action is upload_image and not upload-image because the action
+        # is same as the function name defined
+        elif self.action == 'upload_image':
+            # If the action is to upload the image, then return image-upload
+            # serializer
+            return serializers.RecipeImageSerializer
+
         return self.serializer_class
 
     def perform_create(self, serializer):
         """Create a new Recipe"""
         serializer.save(user=self.request.user)
+
+    @action(methods=['POST'], detail=True, url_path='upload-image')
+    def upload_image(self, request, pk=None):
+        """Upload an image to a recipe"""
+        # As we have set the detail=True in the decorator, that means that we
+        # will be accessing a single specific recipe item in the DB and not the
+        # full collection of recipes so the URL will be:
+        # /recipe/recipes/<ID>/upload-image and not the standard:
+        # /recipe/recipes/upload-image
+        # The function self.get_object() hence retrieves the object which is
+        # being addressed
+        recipe = self.get_object()
+
+        # The get serializer helper function returns the serializer defined
+        # for this view. The recipe object is passed so that when we call the
+        # serializer's save method, that particular object is saved
+        # the second argument 'data' is used to validate the data passed in the
+        # request. Explanation: https://www.udemy.com/course/django-python-
+        # advanced/learn/lecture/12712743#questions/9787036
+        serializer = self.get_serializer(
+            recipe,
+            data=request.data
+        )
+
+        if serializer.is_valid():
+            serializer.save()
+            return Response(
+                serializer.data,
+                status=status.HTTP_200_OK
+            )
+
+        return Response(
+            serializer.errors,
+            status=status.HTTP_400_BAD_REQUEST
+        )
