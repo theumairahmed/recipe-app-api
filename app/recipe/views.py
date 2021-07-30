@@ -28,7 +28,24 @@ class BaseRecipeAttrViewSet(viewsets.GenericViewSet,
     # list in response.
     def get_queryset(self):
         """Return objects for the current authenticated user only"""
-        return self.queryset.filter(user=self.request.user).order_by('-name')
+        # Convert the assigned only query parameter to True or False
+        assigned_only = bool(int(
+            self.request.query_params.get('assigned_only', 0)
+        ))
+
+        queryset = self.queryset
+        if assigned_only:
+            # Filter the queryset, and return the tags which are assigned
+            # to some recipe. Although tags doesn't have a recipe field but
+            # since tags is a ManyToMany field, Django automatically creates
+            # a reverse reference to it. Explanation:
+            # https://www.udemy.com/course/django-python-advanced/learn/lecture
+            # /12712757#questions/6793838
+            queryset = queryset.filter(recipe__isnull=False)
+
+        return queryset.filter(user=self.request.user)\
+            .order_by('-name')\
+            .distinct()
 
     # We override this function present in CreateModelMixin to define the
     # functionality that we should perform while creating the model
